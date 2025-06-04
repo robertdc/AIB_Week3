@@ -11,216 +11,82 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 from dotenv import load_dotenv
-from agents import Agent, Runner, function_tool, handoff, RunContextWrapper
+from litellm import completion
+from litellm.integrations.vector_stores import OpenAI_VectorStore
+from langchain.tools.retriever import create_retriever_tool
+from langchain.vectorstores import OpenAI as OpenAIVectorStore
+from langchain.embeddings import OpenAIEmbeddings
+from agents import Agent, Runner
 
-# =========================================================================
 # Load environment variables
-# =========================================================================
-load_dotenv(override=True)
+load_dotenv()
 
-openai_api_key = os.getenv("OPENAI_API_KEY")
-vectordb_api_key = os.getenv("VECTORDB_API_KEY")
+# Set up OpenAI API key
+openai.api_key = os.getenv("OPENAI_API_KEY")
+vector_store_id = os.getenv("VECTOR_STORE_ID")
 
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
-EMAIL_ENABLED = EMAIL_USER and EMAIL_APP_PASSWORD
+# Function to create the transport policy agent
+def create_transport_policy_agent():
+    retriever = OpenAIVectorStore(
+        embedding=OpenAIEmbeddings(),
+        vectorstore_id=vector_store_id,
+    ).as_retriever()
 
-DB_FILE = os.getenv("DB_FILE", "leads.db")
-
-EMAIL_ROUTING = {
-    "individual": EMAIL_USER,
-    "developer": EMAIL_USER,
-    "planning_agent": EMAIL_USER
-}
-
-LEAD_INFO_CACHE = {}
-LEAD_EMAIL_CACHE = {}
-EMAIL_DEDUPE_WINDOW = 300
-
-# =========================================================================
-# System logging
-# =========================================================================
-def log_system_message(message):
-    if 'system_logs' not in st.session_state:
-        st.session_state['system_logs'] = []
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    st.session_state['system_logs'].append(f"[{timestamp}] {message}")
-
-# =========================================================================
-# MESSAGE PROCESSING
-# =========================================================================
-
-async def process_user_message(user_input):
-    if 'conversation_history' not in st.session_state:
-        st.session_state['conversation_history'] = ""
-
-    if st.session_state['conversation_history']:
-        st.session_state['conversation_history'] += f"\nUser: {user_input}"
-    else:
-        st.session_state['conversation_history'] = user_input
-
-    log_system_message(f"PROCESSING: New message: {user_input[:50]}...")
-
-    try:
-        if 'lead_qualifier' not in st.session_state:
-            log_system_message("PROCESSING: Creating lead qualifier agent")
-            st.session_state['lead_qualifier'] = create_agent_system()
-
-        log_system_message("PROCESSING: Running through lead qualifier")
-        with st.spinner('Processing your message...'):
-            result = await Runner.run(
-                st.session_state['lead_qualifier'],
-                st.session_state['conversation_history']
-            )
-
-        response = result.final_output
-        log_system_message(f"PROCESSING: Generated response: {response[:50]}...")
-
-        st.session_state['conversation_history'] += f"\nAssistant: {response}"
-        st.session_state['messages'].append({"role": "user", "content": user_input})
-        st.session_state['messages'].append({"role": "assistant", "content": response})
-
-        return response
-
-    except Exception as e:
-        error_msg = f"Error processing message: {str(e)}"
-        log_system_message(f"PROCESSING ERROR: {error_msg}")
-        return "I apologize, but there was an error processing your message. Please try again."
-
-# =========================================================================
-# DATABASE DEFINITION
-# =========================================================================
-
-def init_database():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS leads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                lead_type TEXT NOT NULL,
-                name TEXT NOT NULL,
-                company TEXT,
-                email TEXT,
-                phone TEXT,
-                details TEXT,
-                priority TEXT NOT NULL
-            )
-        ''')
-        conn.commit()
-        conn.close()
-        log_system_message("✅ Database initialized")
-        return True
-    except Exception as e:
-        log_system_message(f"❌ Failed to initialize database: {str(e)}")
-        return False
-
-# =========================================================================
-# RENDER SIDEBAR
-# =========================================================================
-
-def render_sidebar():
-    st.sidebar.title("System Configuration")
-
-    if openai_api_key:
-        st.sidebar.success("✅ OpenAI API Key configured")
-    else:
-        st.sidebar.error("❌ OpenAI API Key missing")
-
-    if EMAIL_ENABLED:
-        st.sidebar.success(f"✅ Email enabled ({EMAIL_USER})")
-        if st.sidebar.button("📧 Send Test Email"):
-            send_test_email()
-    else:
-        st.sidebar.warning("⚠️ Email disabled")
-        st.sidebar.info("Add EMAIL_USER and EMAIL_APP_PASSWORD to your .env file")
-
-    st.sidebar.divider()
-
-    # Database view
-    st.sidebar.subheader("Database Management")
-    if st.sidebar.button("👥 View Stored Leads"):
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            df = pd.read_sql_query("SELECT * FROM leads ORDER BY timestamp DESC", conn)
-            conn.close()
-            if not df.empty:
-                st.sidebar.dataframe(df)
-            else:
-                st.sidebar.info("No leads found.")
-        except Exception as e:
-            st.sidebar.error(f"Error loading leads: {str(e)}")
-
-    # Reset chat
-    if st.sidebar.button("🔄 Reset Conversation"):
-        st.session_state['messages'] = []
-        st.session_state['conversation_history'] = ""
-        log_system_message("Conversation reset")
-        st.rerun()
-
-# =========================================================================
-# CREATE AGENT SYSTEM FUNCTION
-# =========================================================================
-
-def create_agent_system():
-    agent_instructions = {
-        "landowner": "You are advising a landowner about transport planning for a major development.",
-        "individual": "You are helping a private individual understand transport policy for a small home extension.",
-        "planning_agent": "You are supporting a planning agent with interpreting policy and requirements."
-    }
-
-    agents = {}
-    for user_type, instructions in agent_instructions.items():
-        agents[user_type] = Agent(name=f"{user_type}_advisor", instructions=instructions)
-
-    # Temporary logic to just return the correct agent for this session (we’ll later support handoffs)
-    user_type = st.session_state.get("user_type", "individual")
-    return agents[user_type]
-
-# =========================================================================
-# STREAMLIT MAIN APP
-# =========================================================================
-
-def main():
-    st.set_page_config(
-        page_title="Transport Policy Advisor",
-        page_icon="🚦",
-        layout="wide",
-        initial_sidebar_state="expanded"
+    retriever_tool = create_retriever_tool(
+        retriever,
+        name="policy_docs",
+        description="Searches transport policy documents for relevant excerpts to help answer user queries."
     )
 
-    st.title("🚦 Transport Policy Advisor")
-    st.markdown("Chat with our AI advisor to understand which transport policies might apply to your project.")
+    return Agent(
+        name="TransportPolicyAdvisor",
+        instructions="""
+You are an expert transport policy advisor. You answer questions for individuals, landowners, and planning agents. Prioritise:
+1. National policy over local policy
+2. More recent documents over older ones
 
-    if 'messages' not in st.session_state:
-        st.session_state['messages'] = []
-    if 'system_logs' not in st.session_state:
-        st.session_state['system_logs'] = []
+Always cite the source:
+- Use “Policy T5 of London Plan 2021” if the reference is available
+- Use paragraph numbers if not, e.g. “NPPF 2024, Paragraph 116”
 
-    if not init_database():
-        st.warning("Failed to initialize database. Check system logs for details.")
+If unsure, explain what else the user could provide.
+""",
+        tools=[retriever_tool],
+    )
 
-    render_sidebar()
+# Function to initialize chat state
+def init_chat_state():
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    col1, col2 = st.columns([2, 1])
+# Function to display the conversation history
+def display_conversation():
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-    with col1:
-        for message in st.session_state['messages']:
-            with st.chat_message(message["role"]):
-                st.write(message["content"])
+# Function to process user input and get agent response
+async def process_user_message(user_message):
+    agent = create_transport_policy_agent()
+    runner = Runner(agent)
+    response = await runner.run(user_message)
 
-        user_input = st.chat_input("Type your message here...")
-        if user_input:
-            asyncio.run(process_user_message(user_input))
-            st.rerun()
+    st.session_state.messages.append({"role": "user", "content": user_message})
+    st.session_state.messages.append({"role": "assistant", "content": response.content})
 
-    with col2:
-        st.subheader("System Logs")
-        log_container = st.container(height=500)
-        with log_container:
-            for log in st.session_state['system_logs']:
-                st.text(log)
+    with st.chat_message("assistant"):
+        st.markdown(response.content)
+        if hasattr(response, "sources"):
+            for doc in response.sources:
+                st.markdown(f"**Source:** {doc.metadata.get('source', 'Unknown')} - Page {doc.metadata.get('page', '')}")
+                st.write(doc.page_content)
 
-if __name__ == "__main__":
-    main()
+# Streamlit UI
+st.set_page_config(page_title="Transport Policy Advisor", layout="wide")
+st.title("Transport Policy Advisor")
+
+init_chat_state()
+display_conversation()
+
+if user_input := st.chat_input("Ask a transport policy question..."):
+    asyncio.run(process_user_message(user_input))
