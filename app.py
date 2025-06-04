@@ -88,6 +88,78 @@ async def process_user_message(user_input):
         return "I apologize, but there was an error processing your message. Please try again."
 
 # =========================================================================
+# DATABASE DEFINITION
+# =========================================================================
+
+def init_database():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS leads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                lead_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                company TEXT,
+                email TEXT,
+                phone TEXT,
+                details TEXT,
+                priority TEXT NOT NULL
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        log_system_message("✅ Database initialized")
+        return True
+    except Exception as e:
+        log_system_message(f"❌ Failed to initialize database: {str(e)}")
+        return False
+
+# =========================================================================
+# RENDER SIDEBAR
+# =========================================================================
+
+def render_sidebar():
+    st.sidebar.title("System Configuration")
+
+    if openai_api_key:
+        st.sidebar.success("✅ OpenAI API Key configured")
+    else:
+        st.sidebar.error("❌ OpenAI API Key missing")
+
+    if EMAIL_ENABLED:
+        st.sidebar.success(f"✅ Email enabled ({EMAIL_USER})")
+        if st.sidebar.button("📧 Send Test Email"):
+            send_test_email()
+    else:
+        st.sidebar.warning("⚠️ Email disabled")
+        st.sidebar.info("Add EMAIL_USER and EMAIL_APP_PASSWORD to your .env file")
+
+    st.sidebar.divider()
+
+    # Database view
+    st.sidebar.subheader("Database Management")
+    if st.sidebar.button("👥 View Stored Leads"):
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            df = pd.read_sql_query("SELECT * FROM leads ORDER BY timestamp DESC", conn)
+            conn.close()
+            if not df.empty:
+                st.sidebar.dataframe(df)
+            else:
+                st.sidebar.info("No leads found.")
+        except Exception as e:
+            st.sidebar.error(f"Error loading leads: {str(e)}")
+
+    # Reset chat
+    if st.sidebar.button("🔄 Reset Conversation"):
+        st.session_state['messages'] = []
+        st.session_state['conversation_history'] = ""
+        log_system_message("Conversation reset")
+        st.rerun()
+
+# =========================================================================
 # STREAMLIT MAIN APP
 # =========================================================================
 
