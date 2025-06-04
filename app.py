@@ -160,6 +160,25 @@ def render_sidebar():
         st.rerun()
 
 # =========================================================================
+# CREATE AGENT SYSTEM FUNCTION
+# =========================================================================
+
+def create_agent_system():
+    agent_instructions = {
+        "landowner": "You are advising a landowner about transport planning for a major development.",
+        "individual": "You are helping a private individual understand transport policy for a small home extension.",
+        "planning_agent": "You are supporting a planning agent with interpreting policy and requirements."
+    }
+
+    agents = {}
+    for user_type, instructions in agent_instructions.items():
+        agents[user_type] = Agent(name=f"{user_type}_advisor", instructions=instructions)
+
+    # Temporary logic to just return the correct agent for this session (we’ll later support handoffs)
+    user_type = st.session_state.get("user_type", "individual")
+    return agents[user_type]
+
+# =========================================================================
 # STREAMLIT MAIN APP
 # =========================================================================
 
