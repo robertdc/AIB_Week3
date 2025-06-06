@@ -250,6 +250,77 @@ You handle the most complex cases with comprehensive policy research and detaile
 }
 
 
+# Citation cleaning functions
+def clean_openai_citations(response: str) -> str:
+    """Aggressively remove and replace OpenAI's automatic citations"""
+    import re
+
+    # Pattern to match all OpenAI citations like 【4:3†source】 or 【4:3†Sustainable_Transport_SPD】
+    citation_pattern = r'【\d+:\d+†[^】]*】'
+
+    # Find all citations to understand the context
+    citations = re.findall(citation_pattern, response)
+
+    # Mapping of common document references to proper citations
+    document_mappings = {
+        'Sustainable_Transport_SPD': 'Sustainable Transport SPD 2013',
+        'Core_Strategy': 'Core Strategy 2012',
+        'Mayor_Transport_Strategy': "Mayor's Transport Strategy 2018",
+        'London_Plan': 'London Plan 2021',
+        'NPPF': 'NPPF 2024',
+        'Planning_Practice_Guidance': 'Planning Practice Guidance 2023'
+    }
+
+    # Create a simple counter for policy references
+    policy_counter = 1
+
+    # Remove all OpenAI citations and replace with clean text
+    cleaned_response = re.sub(citation_pattern, '', response)
+
+    # If we removed citations, add a note about policy sources
+    if citations:
+        # Extract unique document types from the citations
+        doc_types = set()
+        for citation in citations:
+            for doc_key in document_mappings.keys():
+                if doc_key in citation:
+                    doc_types.add(document_mappings[doc_key])
+
+        if doc_types:
+            # Add a clean reference note at the end
+            sources_note = "\n\n**Policy Sources Referenced:**\n"
+            for doc in sorted(doc_types):
+                sources_note += f"- {doc}\n"
+
+            cleaned_response = cleaned_response.rstrip() + sources_note
+
+    return cleaned_response
+
+
+def advanced_citation_replacement(response: str) -> str:
+    """Advanced citation replacement with context awareness"""
+    import re
+
+    # First, try the aggressive cleaning
+    cleaned = clean_openai_citations(response)
+
+    # Additional pattern matching for any remaining issues
+    patterns_to_clean = [
+        r'【[^】]*】',  # Any remaining 【】 brackets
+        r'\[\d+:\d+†[^\]]*\]',  # Square bracket versions
+        r'\(\d+:\d+†[^\)]*\)',  # Round bracket versions
+    ]
+
+    for pattern in patterns_to_clean:
+        cleaned = re.sub(pattern, '', cleaned)
+
+    # Clean up any double spaces or formatting issues
+    cleaned = re.sub(r'\s+', ' ', cleaned)  # Multiple spaces to single
+    cleaned = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned)  # Multiple newlines to double
+
+    return cleaned.strip()
+
+
 # Web Search Functions
 async def search_web(query: str, num_results: int = 5) -> List[Dict]:
     """Search the web using Brave Search API as fallback when vector store lacks info"""
@@ -660,6 +731,9 @@ User Query: {user_input}"""
 
                 response = '\n'.join(response_parts) if response_parts else "No response received."
 
+                # AGGRESSIVE CITATION CLEANING - Always clean OpenAI citations
+                response = advanced_citation_replacement(response)
+
                 # Check if we need web search fallback (not for router)
                 if agent_type != "router" and BRAVE_API_KEY:
                     response = await enhance_response_with_web_search(response, user_input, agent_type)
@@ -713,6 +787,63 @@ def run_agent_sync(user_input: str, agent_type: str, thread_id: Optional[str] = 
             return loop.run_until_complete(call_agent(user_input, agent_type, thread_id))
         finally:
             loop.close()
+
+
+def parse_agent_response(response: str) -> Dict:
+    """Parse structured responses from agents with improved robustness"""
+    result = {
+        "classification": None,
+        "reason": None,
+        "handoff_notes": None,
+        "escalate": None,
+        "escalate_reason": None,
+        "escalate_context": None,
+        "message": response
+    }
+
+    # Split by lines and also try to find patterns anywhere in the text
+    lines = response.strip().split('\n')
+    full_text = response.upper()
+
+    # Look for classification patterns - more flexible matching
+    import re
+
+    # Try to find CLASSIFICATION pattern anywhere in the text
+    classification_patterns = [
+        r'CLASSIFICATION:\s*([A-Z]+)',
+        r'CLASSIFICATION\s*=\s*([A-Z]+)',
+        r'CLASSIFIED\s+AS\s*:\s*([A-Z]+)',
+    ]
+
+    for pattern in classification_patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            result["classification"] = match.group(1).strip()
+            break
+
+    # If no pattern found, try line-by-line parsing (original method)
+    if not result["classification"]:
+        for line in lines:
+            line = line.strip()
+            if line.startswith('CLASSIFICATION:'):
+                result["classification"] = line.split(':', 1)[1].strip()
+                break
+
+    # Parse other fields
+    for line in lines:
+        line = line.strip()
+        if line.startswith('REASON:') and not result["reason"]:
+            result["reason"] = line.split(':', 1)[1].strip()
+        elif line.startswith('HANDOFF_NOTES:'):
+            result["handoff_notes"] = line.split(':', 1)[1].strip()
+        elif line.startswith('ESCALATE:'):
+            result["escalate"] = line.split(':', 1)[1].strip()
+        elif line.startswith('ESCALATE_REASON:'):
+            result["escalate_reason"] = line.split(':', 1)[1].strip()
+        elif line.startswith('CONTEXT:'):
+            result["escalate_context"] = line.split(':', 1)[1].strip()
+
+    return result
 
 
 # Main Chat Interface
@@ -770,23 +901,29 @@ if user_input := st.chat_input("Ask your transport policy question..."):
                     st.session_state.current_agent = classification
                     st.session_state.user_type = classification
 
-                    # Show classification
+                    # Show classification ONLY if status updates are enabled
                     if st.session_state.show_status_updates:
                         st.success(f"✅ Classified as: {classification.title()}")
                         if parsed["reason"]:
                             st.info(f"📝 Reason: {parsed['reason']}")
 
-                    # Get response from specialist
+                        # Show router classification in message history only if status updates enabled
+                        st.markdown(response)
+                        st.session_state.messages.append({"role": "assistant", "content": response})
+
+                    # Get response from specialist (THIS SHOULD ALWAYS HAPPEN)
                     specialist_thread = st.session_state.agent_threads.get(classification)
                     specialist_response, new_thread = run_agent_sync(
                         user_input, classification, specialist_thread
                     )
                     st.session_state.agent_threads[classification] = new_thread
 
+                    # Always show the specialist response (regardless of status updates setting)
                     st.markdown(specialist_response)
                     st.session_state.messages.append({"role": "assistant", "content": specialist_response})
+
                 else:
-                    # Continue with router
+                    # Continue with router - show the router response
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
 
