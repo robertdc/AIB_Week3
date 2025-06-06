@@ -251,6 +251,8 @@ You handle the most complex cases with comprehensive policy research and detaile
 
 
 # Web Search Functions
+
+# Web Search Functions
 async def search_web(query: str, num_results: int = 5) -> List[Dict]:
     """Search the web using Brave Search API as fallback when vector store lacks info"""
     if not BRAVE_API_KEY:
@@ -584,27 +586,21 @@ async def call_agent(user_input: str, agent_type: str, thread_id: Optional[str] 
             context = shared_memory.get_context_summary()
             enhanced_input = f"""Context: {context}
 
-CRITICAL CITATION REQUIREMENT - READ CAREFULLY:
+IMPORTANT: You must search the attached policy documents for relevant information. 
 
-You MUST completely replace ALL automatic citations. Do NOT keep any part of the 【】 format.
+CITATION REQUIREMENTS:
+- REPLACE any automatic citations like 【4:0†source】 with proper policy references
+- For policies: (Document Name Year, Policy X)
+- For paragraphs: (Document Name Year, Para. X)
+- NEVER leave automatic citations like 【4:4†source】 at the end of sentences
+- Replace ALL automatic citations throughout your response
 
-WRONG EXAMPLES (DO NOT USE):
-❌ 【4:9†Sustainable_Transport_SPD】
-❌ 【4:5†Core_Strategy】  
-❌ 【4:4†source】
-❌ Any citation with 【 and 】 brackets
+Examples:
+- (London Plan 2021, Policy T5)
+- (NPPF 2024, Para. 116)
+- (Local Transport Plan 2023, Policy LTP4)
 
-CORRECT EXAMPLES (USE THIS FORMAT):
-✅ (Sustainable Transport SPD 2013, Para. 2.14)
-✅ (London Plan 2021, Policy T6.1)
-✅ (NPPF 2024, Para. 112)
-✅ (Core Strategy 2012, Policy DM8)
-
-INSTRUCTIONS:
-1. Write your response normally
-2. BEFORE finishing, scan for ANY text containing 【 or 】
-3. Replace every instance with proper citation format including year
-4. Double-check no 【】 brackets remain
+When you find information in documents, identify the actual document name and policy/paragraph number, not just the system's citation numbers.
 
 User Query: {user_input}"""
         else:
@@ -924,6 +920,7 @@ with st.sidebar:
         - Conversation context & history
         - Agent handoff tracking
         - Error logging & recovery
+        - Policy document citations
         """)
 
     # Vector store setup help
@@ -948,6 +945,49 @@ with st.sidebar:
             st.error("❌ Not connected - add VECTOR_STORE_ID to .env file")
 
     # Web search setup help
+    with st.expander("🔍 Web Search Setup"):
+        st.markdown("""
+        **To enable policy document access:**
+
+        1. Go to OpenAI Platform → Storage → Vector Stores
+        2. Find your transport policy vector store
+        3. Copy the Vector Store ID (starts with `vs_`)
+        4. Add to your `.env` file:
+           ```
+           VECTOR_STORE_ID=vs_your_id_here
+           ```
+        5. Restart the application
+
+        **Current Status:**
+        """)
+        if VECTOR_STORE_ID:
+            st.success(f"✅ Connected: {VECTOR_STORE_ID}")
+        else:
+            st.error("❌ Not connected - add VECTOR_STORE_ID to .env file")
+
+    # Hyperlink support
+    with st.expander("🔗 Hyperlink Support"):
+        st.markdown("""
+        **Automatic Policy Links:**
+
+        The system automatically converts policy references to clickable links when possible:
+
+        - **London Plan 2021**: Transport policies (T1-T7)
+        - **NPPF 2024**: Sustainable transport paragraphs (104-116)  
+        - **Kingston Core Strategy**: Local development policies
+
+        **How it works:**
+        - Citations like `(London Plan 2021, Policy T6.1)` become clickable
+        - Links take you directly to the relevant policy section
+        - Fallback to plain text if URL not available
+
+        **Note**: Links depend on official websites maintaining their URL structure.
+        """)
+
+        # Show example
+        st.markdown(
+            "**Example:** [London Plan 2021, Policy T6.1](https://www.london.gov.uk/programmes-strategies/planning/london-plan/current-london-plan/chapter-10-transport/policy-t61-residential-parking)")
+
     with st.expander("🔍 Web Search Setup"):
         st.markdown("""
         **To enable web search fallback:**

@@ -1,12 +1,10 @@
-# Ignore sensitive files
 .env
-
-# Bytecode and cache
+.streamlit/secrets.toml
 __pycache__/
 *.pyc
-
-# OS junk
-.DS_Store
-
-# Virtual environments
+*.pyo
+*.pyd
+.Python
+env/
 .venv/
+venv/
